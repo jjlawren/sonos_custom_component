@@ -688,7 +688,7 @@ class SonosSpeaker:
                     )
                     sonos_group_entities.append(entity_id)
 
-            if self.sonos_group_entities == sonos_group_entities:
+            if sonos_group_entities and self.sonos_group_entities == sonos_group_entities:
                 # Useful in polling mode for speakers with stereo pairs or surrounds
                 # as those "invisible" speakers will bypass the single speaker check
                 return
