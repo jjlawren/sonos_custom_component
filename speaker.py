@@ -673,6 +673,7 @@ class SonosSpeaker:
                 and self.sonos_group_entities
             ):
                 # Skip updating existing single speakers in polling mode
+                _LOGGER.debug("Skipping first check for %s", self.zone_name)
                 return
 
             entity_registry = ent_reg.async_get(self.hass)
@@ -687,10 +688,13 @@ class SonosSpeaker:
                         MP_DOMAIN, DOMAIN, uid
                     )
                     sonos_group_entities.append(entity_id)
+                else:
+                    _LOGGER.debug("Speaker not found: %s", uid)
 
             if sonos_group_entities and self.sonos_group_entities == sonos_group_entities:
                 # Useful in polling mode for speakers with stereo pairs or surrounds
                 # as those "invisible" speakers will bypass the single speaker check
+                _LOGGER.debug("Skipping second check for %s (%s)", self.zone_name, sonos_group_entities)
                 return
 
             self.coordinator = None
@@ -705,6 +709,8 @@ class SonosSpeaker:
                     slave.sonos_group = sonos_group
                     slave.sonos_group_entities = sonos_group_entities
                     slave.async_write_entity_states()
+                else:
+                    _LOGGER.debug("%s: grouped speaker not found [%s]", self.zone_name, slave_uid)
 
             _LOGGER.debug("Regrouped %s: %s", self.zone_name, self.sonos_group_entities)
 
