@@ -720,7 +720,7 @@ class SonosSpeaker:
             async with self.hass.data[DATA_SONOS].topology_condition:
                 group = await _async_extract_group(event)
 
-                if self.soco.uid == group[0]:
+                if self.soco.uid == group[0] or not self.sonos_group_entities:
                     _async_regroup(group)
 
                     self.hass.data[DATA_SONOS].topology_condition.notify_all()
