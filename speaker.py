@@ -289,6 +289,12 @@ class SonosSpeaker:
         if self._platforms_ready == PLATFORMS:
             self._resubscription_lock = asyncio.Lock()
             await self.async_subscribe()
+        else:
+            _LOGGER.debug(
+                "Still waiting for platforms on %s: %s",
+                self.zone_name,
+                PLATFORMS - self._platforms_ready,
+            )
 
     def write_entity_states(self) -> None:
         """Write states for associated SonosEntity instances."""
