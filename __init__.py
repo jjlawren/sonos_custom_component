@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from soco import events_asyncio
 import soco.config as soco_config
 from soco.core import SoCo
+from soco.events_base import Event as SonosEvent, SubscriptionBase
 from soco.exceptions import SoCoException
 import voluptuous as vol
 
@@ -25,7 +26,11 @@ from homeassistant.const import CONF_HOSTS, EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_send, dispatcher_send
-from homeassistant.helpers.event import async_track_time_interval, call_later
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_time_interval,
+    call_later,
+)
 from homeassistant.helpers.typing import ConfigType
 
 from .alarms import SonosAlarms
@@ -51,6 +56,8 @@ _LOGGER = logging.getLogger(__name__)
 CONF_ADVERTISE_ADDR = "advertise_addr"
 CONF_INTERFACE_ADDR = "interface_addr"
 DISCOVERY_IGNORED_MODELS = ["Sonos Boost"]
+ZGS_SUBSCRIPTION_TIMEOUT = 2
+ALL_SUBSCRIPTIONS_TIMEOUT = 5
 
 
 CONFIG_SCHEMA = vol.Schema(
@@ -181,21 +188,63 @@ class SonosDiscoveryManager:
         """Check if device at provided IP is known to be invisible."""
         return any(x for x in self._known_invisible if x.ip_address == ip_address)
 
-    def _create_visible_speakers(self, ip_address: str) -> None:
-        """Create all visible SonosSpeaker instances with the provided seed IP."""
-        try:
-            soco = SoCo(ip_address)
+    async def async_subscribe_to_zone_updates(self, ip_address: str) -> None:
+        """Test subscriptions and create SonosSpeakers based on results."""
+        soco = SoCo(ip_address)
+        # Cache now to avoid household ID lookup during first ZoneGroupState processing
+        await self.hass.async_add_executor_job(
+            getattr,
+            soco,
+            "household_id",
+        )
+        sub = await soco.zoneGroupTopology.subscribe()
+
+        @callback
+        def _async_add_visible_zones(subscription_succeeded: bool = False) -> None:
+            """Determine visible zones and create SonosSpeaker instances."""
+            subscription = None
             visible_zones = soco.visible_zones
             self._known_invisible = soco.all_zones - visible_zones
-        except (OSError, SoCoException) as ex:
-            _LOGGER.warning(
-                "Failed to request visible zones from %s: %s", ip_address, ex
-            )
-            return
+            for zone in visible_zones:
+                if zone.uid not in self.data.discovered:
+                    if subscription_succeeded and zone is soco:
+                        subscription = sub
+                    self.hass.async_create_task(
+                        self.async_add_speaker(zone, subscription)
+                    )
 
-        for zone in visible_zones:
-            if zone.uid not in self.data.discovered:
-                self._add_speaker(zone)
+        async def async_subscription_failed(now: datetime.datetime) -> None:
+            """Fallback logic if the subscription callback never arrives."""
+            await sub.unsubscribe()
+            _LOGGER.warning(
+                "Subscription to %s failed, attempting to poll directly", ip_address
+            )
+            try:
+                await self.hass.async_add_executor_job(soco.zone_group_state.poll, soco)
+            except (OSError, SoCoException) as ex:
+                _LOGGER.warning(
+                    "Fallback pollling to %s failed, setup cannot continue: %s",
+                    ip_address,
+                    ex,
+                )
+                return
+            _LOGGER.debug("Fallback ZoneGroupState poll to %s succeeded", ip_address)
+            _async_add_visible_zones()
+
+        cancel_failure_callback = async_call_later(
+            self.hass, ZGS_SUBSCRIPTION_TIMEOUT, async_subscription_failed
+        )
+
+        @callback
+        def _async_subscription_succeeded(event: SonosEvent) -> None:
+            """Create SonosSpeakers when subscription callbacks successfully arrive."""
+            _LOGGER.debug("Subscription to %s succeeded", ip_address)
+            cancel_failure_callback()
+            _async_add_visible_zones(subscription_succeeded=True)
+
+        sub.callback = _async_subscription_succeeded
+        # Hold lock to prevent concurrent subscription attempts
+        await asyncio.sleep(ALL_SUBSCRIPTIONS_TIMEOUT)
 
     async def _async_stop_event_listener(self, event: Event | None = None) -> None:
         for speaker in self.data.discovered.values():
@@ -224,14 +273,25 @@ class SonosDiscoveryManager:
             self.data.hosts_heartbeat()
             self.data.hosts_heartbeat = None
 
-    def _add_speaker(self, soco: SoCo) -> None:
+    async def async_add_speaker(
+        self, soco: SoCo, zone_group_state_sub: SubscriptionBase | None = None
+    ) -> None:
+        """Create and set up a new SonosSpeaker instance."""
+        async with self.creation_lock:
+            await self.hass.async_add_executor_job(
+                self._add_speaker, soco, zone_group_state_sub
+            )
+
+    def _add_speaker(
+        self, soco: SoCo, zone_group_state_sub: SubscriptionBase | None
+    ) -> None:
         """Create and set up a new SonosSpeaker instance."""
         try:
             speaker_info = soco.get_speaker_info(True, timeout=7)
             if soco.uid not in self.data.boot_counts:
                 self.data.boot_counts[soco.uid] = soco.boot_seqnum
             _LOGGER.debug("Adding new speaker: %s", speaker_info)
-            speaker = SonosSpeaker(self.hass, soco, speaker_info)
+            speaker = SonosSpeaker(self.hass, soco, speaker_info, zone_group_state_sub)
             self.data.discovered[soco.uid] = speaker
             for coordinator, coord_dict in (
                 (SonosAlarms, self.data.alarms),
@@ -249,6 +309,9 @@ class SonosDiscoveryManager:
 
     def _poll_manual_hosts(self, now: datetime.datetime | None = None) -> None:
         """Add and maintain Sonos devices from a manual configuration."""
+        _LOGGER.warning("Manual host config temporarily disabled")
+        return
+
         for host in self.hosts:
             ip_addr = socket.gethostbyname(host)
             soco = SoCo(ip_addr)
@@ -287,7 +350,9 @@ class SonosDiscoveryManager:
                 None,
             )
             if not known_speaker:
-                self._create_visible_speakers(ip_addr)
+                asyncio.run_coroutine_threadsafe(
+                    self.async_subscribe_to_zone_updates(ip_addr), self.hass.loop
+                )
             elif not known_speaker.available:
                 try:
                     known_speaker.ping()
@@ -307,16 +372,11 @@ class SonosDiscoveryManager:
         async with self.discovery_lock:
             if not self.data.discovered:
                 # Initial discovery, attempt to add all visible zones
-                await self.hass.async_add_executor_job(
-                    self._create_visible_speakers,
-                    discovered_ip,
-                )
+                await self.async_subscribe_to_zone_updates(discovered_ip)
             elif uid not in self.data.discovered:
                 if self.is_device_invisible(discovered_ip):
                     return
-                await self.hass.async_add_executor_job(
-                    self._add_speaker, SoCo(discovered_ip)
-                )
+                await self.async_add_speaker(SoCo(discovered_ip))
             elif boot_seqnum and boot_seqnum > self.data.boot_counts[uid]:
                 self.data.boot_counts[uid] = boot_seqnum
                 async_dispatcher_send(self.hass, f"{SONOS_REBOOTED}-{uid}")
