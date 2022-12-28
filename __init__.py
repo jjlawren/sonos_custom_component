@@ -176,6 +176,7 @@ class SonosDiscoveryManager:
         self.data = data
         self.hosts = set(hosts)
         self.discovery_lock = asyncio.Lock()
+        self.creation_lock = asyncio.Lock()
         self._known_invisible: set[SoCo] = set()
         self._manual_config_required = bool(hosts)
 
