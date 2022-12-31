@@ -11,7 +11,7 @@ import socket
 from typing import TYPE_CHECKING, Any, Optional, cast
 from urllib.parse import urlparse
 
-from soco import events_asyncio
+from soco import events_asyncio, zonegroupstate
 import soco.config as soco_config
 from soco.core import SoCo
 from soco.events_base import Event as SonosEvent, SubscriptionBase
@@ -45,6 +45,7 @@ from .const import (
     SONOS_REBOOTED,
     SONOS_SPEAKER_ACTIVITY,
     SONOS_VANISHED,
+    SUBSCRIPTION_TIMEOUT,
     UPNP_ST,
 )
 from .exception import SonosUpdateError
@@ -129,6 +130,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Sonos from a config entry."""
     soco_config.EVENTS_MODULE = events_asyncio
     soco_config.REQUEST_TIMEOUT = 9.5
+    zonegroupstate.EVENT_CACHE_TIMEOUT = SUBSCRIPTION_TIMEOUT
 
     if DATA_SONOS not in hass.data:
         hass.data[DATA_SONOS] = SonosData()
