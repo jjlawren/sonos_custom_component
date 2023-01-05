@@ -193,6 +193,7 @@ class SonosDiscoveryManager:
 
     async def async_subscribe_to_zone_updates(self, ip_address: str) -> None:
         """Test subscriptions and create SonosSpeakers based on results."""
+        _LOGGER.debug("Testing subscriptions for %s", ip_address)
         soco = SoCo(ip_address)
         # Cache now to avoid household ID lookup during first ZoneGroupState processing
         await self.hass.async_add_executor_job(
@@ -210,6 +211,7 @@ class SonosDiscoveryManager:
             self._known_invisible = soco.all_zones - visible_zones
             for zone in visible_zones:
                 if zone.uid not in self.data.discovered:
+                    _LOGGER.debug("Adding %s from %s", zone.uid, ip_address)
                     if subscription_succeeded and zone is soco:
                         subscription = sub
                     self.hass.async_create_task(
@@ -374,11 +376,13 @@ class SonosDiscoveryManager:
         """Handle discovered player creation and activity."""
         async with self.discovery_lock:
             if not self.data.discovered:
+                _LOGGER.debug("New full discovery for %s (%s)", discovered_ip, uid)
                 # Initial discovery, attempt to add all visible zones
                 await self.async_subscribe_to_zone_updates(discovered_ip)
             elif uid not in self.data.discovered:
                 if self.is_device_invisible(discovered_ip):
                     return
+                _LOGGER.debug("Incremental add %s from discovery (%s)", discovered_ip, uid)
                 await self.async_add_speaker(SoCo(discovered_ip))
             elif boot_seqnum and boot_seqnum > self.data.boot_counts[uid]:
                 self.data.boot_counts[uid] = boot_seqnum
