@@ -283,6 +283,8 @@ class SonosDiscoveryManager:
     ) -> None:
         """Create and set up a new SonosSpeaker instance."""
         async with self.creation_lock:
+            if soco.uid in self.data.discovered:
+                return
             await self.hass.async_add_executor_job(
                 self._add_speaker, soco, zone_group_state_sub
             )
