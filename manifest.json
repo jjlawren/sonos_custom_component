@@ -17,5 +17,6 @@
       "st": "urn:schemas-upnp-org:device:ZonePlayer:1"
     }
   ],
+  "version": "2023.89128.0",
   "zeroconf": ["_sonos._tcp.local."]
 }
